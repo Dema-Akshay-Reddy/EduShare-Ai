@@ -1,0 +1,410 @@
+"""
+app.py
+AI-Powered College Resource Sharing Platform
+Streamlit front-end wiring together the database, ML engine, and
+sustainability calculator modules.
+
+Run with:  streamlit run app.py
+"""
+
+import streamlit as st
+import pandas as pd
+import matplotlib.pyplot as plt
+from datetime import date
+
+import database as db
+import ml_engine as ml
+import sustainability as sus
+from data_generator import seed_database
+from constants import DEPARTMENTS, CATEGORIES, CONDITIONS, SEMESTERS, AVERAGE_PRICE
+
+st.set_page_config(
+    page_title="EduShare AI | College Resource Sharing Platform",
+    page_icon="🎓",
+    layout="wide",
+)
+
+# ---------------------------------------------------------------------------
+# Setup (runs once per session start; idempotent)
+# ---------------------------------------------------------------------------
+db.init_db()
+seed_database()
+
+@st.cache_resource
+def get_demand_predictor():
+    predictor = ml.DemandPredictor()
+    predictor.train()
+    return predictor
+
+predictor = get_demand_predictor()
+
+if "current_student" not in st.session_state:
+    st.session_state.current_student = None
+if "search_terms" not in st.session_state:
+    st.session_state.search_terms = []
+
+# ---------------------------------------------------------------------------
+# Sidebar navigation
+# ---------------------------------------------------------------------------
+st.sidebar.title("🎓 EduShare AI")
+st.sidebar.caption("Sustainable reuse of educational resources")
+
+page = st.sidebar.radio(
+    "Navigate",
+    [
+        "🏠 Home",
+        "📤 Upload Resource",
+        "🔎 Browse & AI Matching",
+        "✨ Recommendations",
+        "📈 Demand Prediction",
+        "🌱 Sustainability Impact",
+        "📊 Analytics Dashboard",
+    ],
+)
+
+st.sidebar.divider()
+st.sidebar.subheader("Your Profile")
+students = db.get_all_students()
+student_names = ["-- New / Guest --"] + sorted([s["name"] for s in students])
+selected_name = st.sidebar.selectbox("Act as student", student_names)
+if selected_name != "-- New / Guest --":
+    st.session_state.current_student = db.get_student_by_name(selected_name)
+else:
+    st.session_state.current_student = None
+
+st.sidebar.divider()
+st.sidebar.caption("Flow: Upload → DB → AI Matching → Recommendation → "
+                    "Demand Prediction → Notification → Exchange → Impact")
+
+
+# ===========================================================================
+# PAGE: HOME
+# ===========================================================================
+if page == "🏠 Home":
+    st.title("AI-Powered College Resource Sharing Platform")
+    st.markdown(
+        "##### Promoting Sustainable Reuse of Educational Resources\n"
+        "Connecting students with reusable textbooks, calculators, lab kits, "
+        "drawing instruments, and stationery — reducing waste and educational "
+        "expenses through AI-driven matching and demand forecasting."
+    )
+
+    resources = db.get_all_resources()
+    transactions = db.get_all_transactions()
+    impact = sus.compute_impact_metrics()
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Resources Listed", len(resources))
+    col2.metric("Currently Available", sum(1 for r in resources if r["availability_status"] == "Available"))
+    col3.metric("Resources Reused", impact["total_reused"])
+    col4.metric("Money Saved (₹)", f"{impact['total_money_saved']:,.0f}")
+
+    st.divider()
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("How it works")
+        st.markdown(
+            "1. **Upload** an unused resource with category, department, and semester.\n"
+            "2. The **AI Matching Engine** instantly identifies likely recipients.\n"
+            "3. The **Recommendation Engine** surfaces relevant items to students browsing.\n"
+            "4. The **Demand Prediction Module** forecasts which items will be needed next.\n"
+            "5. Completed exchanges feed the **Sustainability Impact Calculator**."
+        )
+    with c2:
+        st.subheader("Recently listed")
+        recent = resources[:6]
+        if recent:
+            df = pd.DataFrame(recent)[["item_name", "category", "department", "semester", "availability_status"]]
+            st.dataframe(df, hide_index=True, width='stretch')
+        else:
+            st.info("No resources listed yet — be the first to upload one!")
+
+
+# ===========================================================================
+# PAGE: UPLOAD RESOURCE
+# ===========================================================================
+elif page == "📤 Upload Resource":
+    st.title("📤 Resource Upload Module")
+    st.caption("List a resource you no longer need so another student can reuse it.")
+
+    with st.form("upload_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            item_name = st.text_input("Item Name", placeholder="e.g. Engineering Drawing Kit")
+            category = st.selectbox("Category", CATEGORIES)
+            department = st.selectbox("Department", DEPARTMENTS)
+            semester = st.selectbox("Semester", SEMESTERS)
+        with col2:
+            condition = st.selectbox("Condition", CONDITIONS)
+            availability_status = st.selectbox("Availability Status", ["Available", "Reserved"])
+            uploader_name = st.text_input(
+                "Your Name",
+                value=st.session_state.current_student["name"] if st.session_state.current_student else "",
+            )
+            suggested_value = AVERAGE_PRICE.get(category, 300)
+            estimated_value = st.number_input(
+                "Estimated Value (₹)", min_value=0.0, value=float(suggested_value), step=50.0
+            )
+        description = st.text_area("Description", placeholder="Condition details, accessories included, etc.")
+        submitted = st.form_submit_button("Upload Resource", width='stretch')
+
+    if submitted:
+        if not item_name or not uploader_name:
+            st.error("Please fill in at least the item name and your name.")
+        else:
+            new_id = db.add_resource(
+                item_name, category, department, semester, condition,
+                description, availability_status, uploader_name, estimated_value
+            )
+            st.success(f"✅ '{item_name}' uploaded successfully (Resource ID #{new_id}).")
+
+            resource = db.get_resource_by_id(new_id)
+            matches = ml.match_students_for_resource(resource, top_n=8)
+            segments = ml.summarize_recipient_segments(matches)
+
+            st.subheader("🤖 AI Matching Engine — Potential Recipients")
+            if segments:
+                st.write("Likely recipient segments identified:")
+                for seg_name, count in segments:
+                    st.markdown(f"- **{seg_name}** ({count} matched student{'s' if count != 1 else ''})")
+                st.write("Top individually matched students:")
+                match_df = pd.DataFrame(matches)[["name", "department", "semester", "match_score"]]
+                match_df.columns = ["Student", "Department", "Semester", "Match Score (%)"]
+                st.dataframe(match_df, hide_index=True, width='stretch')
+                st.info(f"📣 Notification simulated: {len(matches)} matched students would be notified about this listing.")
+            else:
+                st.warning("No strong matches found yet — add more student profiles to improve matching.")
+
+
+# ===========================================================================
+# PAGE: BROWSE & AI MATCHING
+# ===========================================================================
+elif page == "🔎 Browse & AI Matching":
+    st.title("🔎 Browse Resources")
+    st.caption("Search available resources and request an exchange.")
+
+    f1, f2, f3, f4 = st.columns(4)
+    with f1:
+        filter_category = st.selectbox("Category", ["All"] + CATEGORIES)
+    with f2:
+        filter_department = st.selectbox("Department", ["All"] + DEPARTMENTS)
+    with f3:
+        filter_semester = st.selectbox("Semester", ["All"] + SEMESTERS)
+    with f4:
+        search_query = st.text_input("Search keyword", placeholder="e.g. drawing, calculator...")
+
+    resources = db.get_all_resources(only_available=True)
+    if filter_category != "All":
+        resources = [r for r in resources if r["category"] == filter_category]
+    if filter_department != "All":
+        resources = [r for r in resources if r["department"] == filter_department]
+    if filter_semester != "All":
+        resources = [r for r in resources if r["semester"] == filter_semester]
+    if search_query:
+        q = search_query.lower()
+        resources = [r for r in resources if q in r["item_name"].lower() or q in (r["description"] or "").lower()]
+        if st.session_state.current_student:
+            db.log_search(st.session_state.current_student["name"], search_query)
+        st.session_state.search_terms.append(search_query)
+
+    st.write(f"**{len(resources)}** resource(s) found")
+
+    for r in resources:
+        with st.container(border=True):
+            c1, c2 = st.columns([4, 1])
+            with c1:
+                st.markdown(f"**{r['item_name']}** · {r['category']} · {r['department']} · Sem {r['semester']}")
+                st.caption(f"Condition: {r['condition']} | Est. value: ₹{r['estimated_value']:.0f} | Uploaded by {r['uploader_name']}")
+                st.write(r["description"])
+            with c2:
+                if st.button("View AI Matches", key=f"match_{r['id']}"):
+                    st.session_state[f"show_matches_{r['id']}"] = True
+                recipient_default = st.session_state.current_student["name"] if st.session_state.current_student else ""
+                recipient = st.text_input("Requester name", value=recipient_default, key=f"req_{r['id']}")
+                if st.button("Request Exchange", key=f"exchange_{r['id']}"):
+                    if recipient:
+                        db.record_transaction(r["id"], recipient, r["estimated_value"])
+                        st.success(f"Exchange recorded — {recipient} gets the {r['item_name']}! Money saved: ₹{r['estimated_value']:.0f}")
+                        st.rerun()
+                    else:
+                        st.warning("Enter a name to request this item.")
+
+            if st.session_state.get(f"show_matches_{r['id']}"):
+                matches = ml.match_students_for_resource(r, top_n=5)
+                segments = ml.summarize_recipient_segments(matches)
+                st.markdown("**AI-identified potential recipients:**")
+                for seg_name, count in segments:
+                    st.markdown(f"- {seg_name} ({count})")
+
+
+# ===========================================================================
+# PAGE: RECOMMENDATIONS
+# ===========================================================================
+elif page == "✨ Recommendations":
+    st.title("✨ Personalized Recommendation Engine")
+    st.caption("Content-based filtering using department, semester, interests, and search history.")
+
+    if st.session_state.current_student:
+        student = st.session_state.current_student
+        st.write(f"Showing recommendations for **{student['name']}** "
+                 f"({student['department']}, Semester {student['semester']}, "
+                 f"interests: {student['interests']})")
+    else:
+        st.info("No profile selected in the sidebar — building a quick guest profile below.")
+        gc1, gc2, gc3 = st.columns(3)
+        with gc1:
+            g_dept = st.selectbox("Department", DEPARTMENTS, key="guest_dept")
+        with gc2:
+            g_sem = st.selectbox("Semester", SEMESTERS, key="guest_sem")
+        with gc3:
+            g_interests = st.multiselect("Interests", CATEGORIES, key="guest_interests")
+        student = {"name": "Guest", "department": g_dept, "semester": g_sem, "interests": ", ".join(g_interests)}
+
+    history = db.get_search_history(student["name"]) if student["name"] != "Guest" else []
+    past_queries = [h["query"] for h in history]
+
+    recs = ml.recommend_resources_for_student(student, search_queries=past_queries, top_n=8)
+
+    if recs:
+        df = pd.DataFrame(recs)[["item_name", "category", "department", "semester", "condition", "relevance_score"]]
+        df.columns = ["Item", "Category", "Department", "Semester", "Condition", "Relevance (%)"]
+        st.dataframe(df, hide_index=True, width='stretch')
+    else:
+        st.warning("No available resources to recommend right now.")
+
+
+# ===========================================================================
+# PAGE: DEMAND PREDICTION
+# ===========================================================================
+elif page == "📈 Demand Prediction":
+    st.title("📈 Demand Prediction Module")
+    st.caption("Random Forest model trained on 12 months of historical request data, forecasting next month's demand.")
+
+    month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    next_month = (date.today().month % 12) + 1
+    st.write(f"Forecast target: **{month_names[next_month - 1]}**")
+
+    cat_forecast = predictor.predict_next_month_by_category(next_month)
+
+    if not cat_forecast.empty:
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            fig, ax = plt.subplots(figsize=(7, 4))
+            colors = {"High": "#d62728", "Medium": "#ff7f0e", "Low": "#2ca02c"}
+            bar_colors = [colors[lvl] for lvl in cat_forecast["demand_level"]]
+            ax.barh(cat_forecast["category"], cat_forecast["predicted_requests"], color=bar_colors)
+            ax.set_xlabel("Predicted Requests")
+            ax.set_title(f"Predicted Demand by Category — {month_names[next_month - 1]}")
+            ax.invert_yaxis()
+            st.pyplot(fig)
+        with c2:
+            st.subheader("Predicted High Demand")
+            high = cat_forecast[cat_forecast["demand_level"] == "High"]
+            for _, row in high.iterrows():
+                st.markdown(f"🔴 **{row['category']}** — ~{row['predicted_requests']} requests")
+            st.subheader("Medium Demand")
+            med = cat_forecast[cat_forecast["demand_level"] == "Medium"]
+            for _, row in med.iterrows():
+                st.markdown(f"🟠 {row['category']} — ~{row['predicted_requests']} requests")
+
+        st.divider()
+        st.subheader("Department-level breakdown")
+        dept_forecast = predictor.predict_by_department(next_month)
+        pivot = dept_forecast.pivot_table(index="department", columns="category", values="predicted_requests", aggfunc="sum")
+        st.dataframe(pivot, width='stretch')
+    else:
+        st.warning("Not enough historical data to train the demand model yet.")
+
+
+# ===========================================================================
+# PAGE: SUSTAINABILITY IMPACT
+# ===========================================================================
+elif page == "🌱 Sustainability Impact":
+    st.title("🌱 Sustainability Impact Calculator")
+
+    impact = sus.compute_impact_metrics()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Resources Reused", impact["total_reused"])
+    c2.metric("Money Saved (₹)", f"{impact['total_money_saved']:,.0f}")
+    c3.metric("Waste Reduced (kg)", f"{impact['total_waste_kg']:,.1f}")
+    c4.metric("CO₂ Avoided (kg)", f"{impact['total_co2_kg']:,.1f}")
+
+    st.caption(
+        "Waste and CO₂ figures are illustrative estimates based on average material "
+        "weight per resource category and standard emission factors for manufacturing "
+        "avoided goods."
+    )
+
+    st.divider()
+    by_category = sus.compute_impact_by_category()
+    if by_category:
+        cat_df = pd.DataFrame([
+            {"Category": k, "Items Reused": v["count"], "Money Saved (₹)": round(v["money_saved"], 0),
+             "Waste Reduced (kg)": round(v["waste_kg"], 1)}
+            for k, v in by_category.items()
+        ]).sort_values("Items Reused", ascending=False)
+        st.subheader("Impact by Category")
+        st.dataframe(cat_df, hide_index=True, width='stretch')
+    else:
+        st.info("No exchanges recorded yet — impact metrics will populate as resources are exchanged.")
+
+
+# ===========================================================================
+# PAGE: ANALYTICS DASHBOARD
+# ===========================================================================
+elif page == "📊 Analytics Dashboard":
+    st.title("📊 Analytics Dashboard")
+
+    resources = db.get_all_resources()
+    transactions = db.get_all_transactions()
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Items Listed", len(resources))
+    c2.metric("Total Items Exchanged", len(transactions))
+    c3.metric("Active Listings", sum(1 for r in resources if r["availability_status"] == "Available"))
+
+    st.divider()
+    g1, g2 = st.columns(2)
+
+    with g1:
+        st.subheader("Most Demanded Resources")
+        if transactions:
+            tx_df = pd.DataFrame(transactions)
+            top_items = tx_df["item_name"].value_counts().head(8)
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.barh(top_items.index[::-1], top_items.values[::-1], color="#1f77b4")
+            ax.set_xlabel("Times Exchanged")
+            st.pyplot(fig)
+        else:
+            st.info("No exchange data yet.")
+
+    with g2:
+        st.subheader("Department-wise Usage")
+        if transactions:
+            dept_counts = pd.DataFrame(transactions)["department"].value_counts()
+            fig2, ax2 = plt.subplots(figsize=(6, 4))
+            ax2.pie(dept_counts.values, labels=dept_counts.index, autopct="%1.0f%%", startangle=90,
+                    textprops={"fontsize": 8})
+            ax2.axis("equal")
+            st.pyplot(fig2)
+        else:
+            st.info("No exchange data yet.")
+
+    st.divider()
+    st.subheader("Exchanges Over Time")
+    if transactions:
+        tx_df = pd.DataFrame(transactions)
+        tx_df["exchange_date"] = pd.to_datetime(tx_df["exchange_date"])
+        timeline = tx_df.groupby(tx_df["exchange_date"].dt.to_period("M")).size()
+        fig3, ax3 = plt.subplots(figsize=(10, 3.5))
+        timeline.plot(kind="bar", ax=ax3, color="#2ca02c")
+        ax3.set_ylabel("Items Exchanged")
+        ax3.set_xlabel("Month")
+        st.pyplot(fig3)
+    else:
+        st.info("No exchange data yet.")
+
+    st.divider()
+    st.subheader("All Listings")
+    st.dataframe(pd.DataFrame(resources), hide_index=True, width='stretch')
