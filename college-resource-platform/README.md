@@ -20,8 +20,9 @@ on first run — no manual setup required.
 
 ```
 .
-├── app.py              # Streamlit UI — all 7 pages
-├── database.py         # SQLite schema + CRUD (resources, students, transactions, search history, demand history)
+├── app.py              # Streamlit UI — auth gate + all 7 pages
+├── auth.py              # Password hashing, validation, brute-force lockout logic
+├── database.py         # SQLite schema + CRUD (resources, students, transactions, search history, demand history, users)
 ├── data_generator.py   # Seeds synthetic students/resources/demand history; exports data/resources.csv
 ├── ml_engine.py         # AI core: demand forecasting, AI matching, recommendation engine
 ├── sustainability.py     # Sustainability impact calculations
@@ -32,11 +33,51 @@ on first run — no manual setup required.
     └── resources.csv          # CSV snapshot of resource listings
 ```
 
+## Authentication
+
+The platform is gated behind a sign-in/sign-up screen (`app.py`, rendered via
+`auth.py`). Security measures implemented:
+
+- **Password hashing**: PBKDF2-HMAC-SHA256 with 260,000 iterations and a
+  unique random 16-byte salt per user (no plaintext passwords are ever
+  stored). Verification uses `hmac.compare_digest` for constant-time
+  comparison, avoiding timing side-channel attacks.
+- **Input validation**: usernames (3-20 chars, alphanumeric + underscore),
+  email format, password strength (8+ chars, letter + number required),
+  password-confirmation matching, and required-field checks — all enforced
+  before any database write, with specific, actionable error messages.
+- **Duplicate protection**: `username` and `email` have `UNIQUE` constraints
+  at the database level (defense in depth alongside the app-level check),
+  and database writes are wrapped in a context manager that guarantees the
+  connection closes even on error — so a failed signup attempt can never
+  leave the database locked for other users.
+- **Brute-force mitigation**: after 5 consecutive failed login attempts,
+  an account is locked for 5 minutes. Failed-attempt counts reset on a
+  successful login.
+- **No username enumeration**: login failures always show a generic
+  "Invalid username or password" message, whether the username doesn't
+  exist or the password is wrong, so attackers can't probe which usernames
+  are registered.
+- **SQL injection protection**: every database query uses parameterized
+  placeholders (`?`), never string-formatted SQL.
+
+On sign-up, a matching row is also created in the `students` table, so new
+users are automatically included as candidates in the AI matching and
+recommendation engines.
+
+**Note on scope**: this is demo/project-grade authentication suitable for a
+college assignment or internal tool. For a production deployment you would
+additionally want: HTTPS everywhere, email verification on signup, a
+password-reset flow, server-side session tokens instead of relying solely
+on Streamlit's in-memory session state, and a managed database with regular
+backups instead of a local SQLite file.
+
 ## How Each Objective Is Implemented
 
 **Resource Upload Module** — `app.py` → "Upload Resource" page. Captures item
 name, category, department, semester, condition, description, and
-availability status, and writes them to the `resources` table.
+availability status, and writes them to the `resources` table. The uploader
+is automatically attributed to the signed-in account.
 
 **AI-Based Matching System** — `ml_engine.match_students_for_resource()`.
 When a resource is uploaded, every student profile is scored using a blend

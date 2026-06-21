@@ -10,11 +10,13 @@ Run with:  streamlit run app.py
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
+import sqlite3
 from datetime import date
 
 import database as db
 import ml_engine as ml
 import sustainability as sus
+import auth
 from data_generator import seed_database
 from constants import DEPARTMENTS, CATEGORIES, CONDITIONS, SEMESTERS, AVERAGE_PRICE
 
@@ -38,10 +40,151 @@ def get_demand_predictor():
 
 predictor = get_demand_predictor()
 
+if "auth_user" not in st.session_state:
+    st.session_state.auth_user = None
 if "current_student" not in st.session_state:
     st.session_state.current_student = None
 if "search_terms" not in st.session_state:
     st.session_state.search_terms = []
+if "flash" not in st.session_state:
+    st.session_state.flash = None
+
+
+def log_in_user(user_row):
+    """Populate session state for a successfully authenticated user."""
+    st.session_state.auth_user = user_row
+    st.session_state.current_student = db.get_student_by_id(user_row["student_id"])
+
+
+def log_out_user():
+    st.session_state.auth_user = None
+    st.session_state.current_student = None
+    st.session_state.search_terms = []
+
+
+# ---------------------------------------------------------------------------
+# Authentication gate — nothing below renders until the user signs in
+# ---------------------------------------------------------------------------
+if st.session_state.auth_user is None:
+    st.title("🎓 EduShare AI")
+    st.markdown(
+        "##### AI-Powered College Resource Sharing Platform\n"
+        "Sign in to share, find, and reuse textbooks, calculators, lab kits, "
+        "and more with fellow students."
+    )
+
+    if st.session_state.flash:
+        kind, message = st.session_state.flash
+        getattr(st, kind)(message)
+        st.session_state.flash = None
+
+    left, mid, right = st.columns([1, 2, 1])
+    with mid:
+        with st.container(border=True):
+            tab_signin, tab_signup = st.tabs(["🔑 Sign In", "📝 Sign Up"])
+
+            # ----------------------------- SIGN IN -----------------------------
+            with tab_signin:
+                st.caption("Welcome back — enter your credentials to continue.")
+                with st.form("signin_form"):
+                    si_username = st.text_input("Username")
+                    si_password = st.text_input("Password", type="password")
+                    si_submit = st.form_submit_button("Sign In", width='stretch')
+
+                if si_submit:
+                    if not si_username or not si_password:
+                        st.error("Please enter both your username and password.")
+                    else:
+                        user = db.get_user_by_username(si_username.strip())
+                        if user is None:
+                            # Generic message — never reveal whether the
+                            # username exists, to prevent account enumeration.
+                            st.error("Invalid username or password.")
+                        else:
+                            locked, lock_msg = auth.is_locked(user)
+                            if locked:
+                                st.error(lock_msg)
+                            elif auth.verify_password(si_password, user["password_hash"], user["salt"]):
+                                db.record_login_success(user["id"])
+                                log_in_user(db.get_user_by_username(si_username.strip()))
+                                st.session_state.flash = ("success", f"Welcome back, {user['full_name']}!")
+                                st.rerun()
+                            else:
+                                new_count = (user["failed_attempts"] or 0) + 1
+                                if new_count >= auth.MAX_FAILED_ATTEMPTS:
+                                    db.record_login_failure(user["id"], lock_until=auth.compute_lockout_until())
+                                    st.error(
+                                        f"Invalid username or password. Account locked for "
+                                        f"{auth.LOCKOUT_MINUTES} minutes after too many failed attempts."
+                                    )
+                                else:
+                                    db.record_login_failure(user["id"])
+                                    st.error("Invalid username or password.")
+
+            # ----------------------------- SIGN UP -----------------------------
+            with tab_signup:
+                st.caption("Create an account to start sharing and finding resources.")
+                with st.form("signup_form"):
+                    su_full_name = st.text_input("Full Name", placeholder="e.g. Aarav Sharma")
+                    su_username = st.text_input("Username", placeholder="3-20 characters: letters, numbers, underscore")
+                    su_email = st.text_input("Email", placeholder="you@college.edu")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        su_password = st.text_input("Password", type="password")
+                    with c2:
+                        su_confirm = st.text_input("Confirm Password", type="password")
+                    su_dept = st.selectbox("Department", DEPARTMENTS)
+                    su_sem = st.selectbox("Semester", SEMESTERS)
+                    su_interests = st.multiselect("Interests (helps with matching & recommendations)", CATEGORIES)
+                    st.caption("Password must be at least 8 characters and include a letter and a number.")
+                    su_submit = st.form_submit_button("Create Account", width='stretch')
+
+                if su_submit:
+                    errors = []
+                    ok, msg = auth.validate_full_name(su_full_name)
+                    if not ok:
+                        errors.append(msg)
+                    username_clean = su_username.strip()
+                    ok, msg = auth.validate_username(username_clean)
+                    if not ok:
+                        errors.append(msg)
+                    email_clean = su_email.strip().lower()
+                    ok, msg = auth.validate_email(email_clean)
+                    if not ok:
+                        errors.append(msg)
+                    ok, msg = auth.validate_password_strength(su_password)
+                    if not ok:
+                        errors.append(msg)
+                    if su_password != su_confirm:
+                        errors.append("Passwords do not match.")
+                    if not errors and db.get_user_by_username(username_clean):
+                        errors.append("That username is already taken.")
+                    if not errors and db.get_user_by_email(email_clean):
+                        errors.append("An account with that email already exists.")
+
+                    if errors:
+                        for e in errors:
+                            st.error(e)
+                    else:
+                        try:
+                            interests_str = ", ".join(su_interests)
+                            student_id = db.add_student(su_full_name.strip(), su_dept, su_sem, interests_str)
+                            pw_hash, salt = auth.hash_password(su_password)
+                            db.create_user(
+                                username_clean, email_clean, pw_hash, salt, su_full_name.strip(),
+                                su_dept, su_sem, interests_str, student_id
+                            )
+                            new_user = db.get_user_by_username(username_clean)
+                            db.record_login_success(new_user["id"])
+                            log_in_user(new_user)
+                            st.session_state.flash = ("success", f"Account created — welcome, {su_full_name.strip()}!")
+                            st.rerun()
+                        except sqlite3.IntegrityError:
+                            st.error("That username or email is already registered. Please sign in instead.")
+
+    st.stop()
+
+current_user = st.session_state.auth_user
 
 # ---------------------------------------------------------------------------
 # Sidebar navigation
@@ -64,15 +207,18 @@ page = st.sidebar.radio(
 
 st.sidebar.divider()
 st.sidebar.subheader("Your Profile")
-students = db.get_all_students()
-student_names = ["-- New / Guest --"] + sorted([s["name"] for s in students])
-selected_name = st.sidebar.selectbox("Act as student", student_names)
-if selected_name != "-- New / Guest --":
-    st.session_state.current_student = db.get_student_by_name(selected_name)
-else:
-    st.session_state.current_student = None
+st.sidebar.markdown(f"**{current_user['full_name']}**")
+st.sidebar.caption(f"@{current_user['username']} · {current_user['department']} · Sem {current_user['semester']}")
+if st.sidebar.button("Log Out", width='stretch'):
+    log_out_user()
+    st.rerun()
 
 st.sidebar.divider()
+
+if st.session_state.flash:
+    kind, message = st.session_state.flash
+    getattr(st, kind)(message)
+    st.session_state.flash = None
 st.sidebar.caption("Flow: Upload → DB → AI Matching → Recommendation → "
                     "Demand Prediction → Notification → Exchange → Impact")
 
@@ -126,7 +272,7 @@ if page == "🏠 Home":
 # ===========================================================================
 elif page == "📤 Upload Resource":
     st.title("📤 Resource Upload Module")
-    st.caption("List a resource you no longer need so another student can reuse it.")
+    st.caption(f"Posting as **{current_user['full_name']}** (@{current_user['username']})")
 
     with st.form("upload_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
@@ -138,10 +284,6 @@ elif page == "📤 Upload Resource":
         with col2:
             condition = st.selectbox("Condition", CONDITIONS)
             availability_status = st.selectbox("Availability Status", ["Available", "Reserved"])
-            uploader_name = st.text_input(
-                "Your Name",
-                value=st.session_state.current_student["name"] if st.session_state.current_student else "",
-            )
             suggested_value = AVERAGE_PRICE.get(category, 300)
             estimated_value = st.number_input(
                 "Estimated Value (₹)", min_value=0.0, value=float(suggested_value), step=50.0
@@ -149,9 +291,11 @@ elif page == "📤 Upload Resource":
         description = st.text_area("Description", placeholder="Condition details, accessories included, etc.")
         submitted = st.form_submit_button("Upload Resource", width='stretch')
 
+    uploader_name = current_user["full_name"]
+
     if submitted:
-        if not item_name or not uploader_name:
-            st.error("Please fill in at least the item name and your name.")
+        if not item_name:
+            st.error("Please enter an item name.")
         else:
             new_id = db.add_resource(
                 item_name, category, department, semester, condition,
@@ -204,8 +348,7 @@ elif page == "🔎 Browse & AI Matching":
     if search_query:
         q = search_query.lower()
         resources = [r for r in resources if q in r["item_name"].lower() or q in (r["description"] or "").lower()]
-        if st.session_state.current_student:
-            db.log_search(st.session_state.current_student["name"], search_query)
+        db.log_search(current_user["full_name"], search_query)
         st.session_state.search_terms.append(search_query)
 
     st.write(f"**{len(resources)}** resource(s) found")
@@ -220,15 +363,12 @@ elif page == "🔎 Browse & AI Matching":
             with c2:
                 if st.button("View AI Matches", key=f"match_{r['id']}"):
                     st.session_state[f"show_matches_{r['id']}"] = True
-                recipient_default = st.session_state.current_student["name"] if st.session_state.current_student else ""
-                recipient = st.text_input("Requester name", value=recipient_default, key=f"req_{r['id']}")
-                if st.button("Request Exchange", key=f"exchange_{r['id']}"):
-                    if recipient:
-                        db.record_transaction(r["id"], recipient, r["estimated_value"])
-                        st.success(f"Exchange recorded — {recipient} gets the {r['item_name']}! Money saved: ₹{r['estimated_value']:.0f}")
-                        st.rerun()
-                    else:
-                        st.warning("Enter a name to request this item.")
+                if r["uploader_name"] == current_user["full_name"]:
+                    st.caption("This is your own listing.")
+                elif st.button("Request Exchange", key=f"exchange_{r['id']}"):
+                    db.record_transaction(r["id"], current_user["full_name"], r["estimated_value"])
+                    st.success(f"Exchange recorded — you get the {r['item_name']}! Money saved: ₹{r['estimated_value']:.0f}")
+                    st.rerun()
 
             if st.session_state.get(f"show_matches_{r['id']}"):
                 matches = ml.match_students_for_resource(r, top_n=5)
@@ -245,23 +385,12 @@ elif page == "✨ Recommendations":
     st.title("✨ Personalized Recommendation Engine")
     st.caption("Content-based filtering using department, semester, interests, and search history.")
 
-    if st.session_state.current_student:
-        student = st.session_state.current_student
-        st.write(f"Showing recommendations for **{student['name']}** "
-                 f"({student['department']}, Semester {student['semester']}, "
-                 f"interests: {student['interests']})")
-    else:
-        st.info("No profile selected in the sidebar — building a quick guest profile below.")
-        gc1, gc2, gc3 = st.columns(3)
-        with gc1:
-            g_dept = st.selectbox("Department", DEPARTMENTS, key="guest_dept")
-        with gc2:
-            g_sem = st.selectbox("Semester", SEMESTERS, key="guest_sem")
-        with gc3:
-            g_interests = st.multiselect("Interests", CATEGORIES, key="guest_interests")
-        student = {"name": "Guest", "department": g_dept, "semester": g_sem, "interests": ", ".join(g_interests)}
+    student = st.session_state.current_student
+    st.write(f"Showing recommendations for **{student['name']}** "
+             f"({student['department']}, Semester {student['semester']}, "
+             f"interests: {student['interests'] or 'none set'})")
 
-    history = db.get_search_history(student["name"]) if student["name"] != "Guest" else []
+    history = db.get_search_history(student["name"])
     past_queries = [h["query"] for h in history]
 
     recs = ml.recommend_resources_for_student(student, search_queries=past_queries, top_n=8)
