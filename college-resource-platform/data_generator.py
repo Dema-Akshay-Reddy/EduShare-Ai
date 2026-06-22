@@ -216,6 +216,7 @@ def seed_database():
     for r in all_resources:
         if r["availability_status"] == "Exchanged":
             recipient = random.choice(students)["name"]
+            db.update_resource_status(r["id"], "Available")
             db.record_transaction(r["id"], recipient, r["estimated_value"])
 
     csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "resources.csv")

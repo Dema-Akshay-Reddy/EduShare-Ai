@@ -133,18 +133,6 @@ def init_db():
             )
         """)
 
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS sessions (
-                token TEXT PRIMARY KEY,
-                user_id INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            )
-        """)
-
-        conn.commit()
-
 
 # ---------------------------------------------------------------------------
 # Resources
@@ -233,10 +221,16 @@ def record_transaction(resource_id, recipient_name, money_saved):
     with db_session() as conn:
         cur = conn.cursor()
         cur.execute("""
+            UPDATE resources
+            SET availability_status = 'Exchanged'
+            WHERE id = ? AND availability_status = 'Available'
+        """, (resource_id,))
+        if cur.rowcount != 1:
+            raise ValueError("Resource is not available for exchange.")
+        cur.execute("""
             INSERT INTO transactions (resource_id, recipient_name, exchange_date, money_saved)
             VALUES (?, ?, ?, ?)
         """, (resource_id, recipient_name, datetime.now().strftime("%Y-%m-%d"), money_saved))
-    update_resource_status(resource_id, "Exchanged")
 
 
 def get_all_transactions():

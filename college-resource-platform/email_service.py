@@ -25,25 +25,21 @@ The module degrades gracefully: if credentials are missing it returns
 
 import smtplib
 import ssl
-import os
 import traceback
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from datetime import datetime
 
-from dotenv import load_dotenv
+from config import cfg
 
-load_dotenv()
-
-SMTP_HOST     = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT     = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER     = os.getenv("SMTP_USER", "")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-PLATFORM_NAME = os.getenv("PLATFORM_NAME", "EduShare AI")
+SMTP_HOST = cfg.smtp_host
+SMTP_PORT = cfg.smtp_port
+SMTP_USER = cfg.email_sender
+SMTP_PASSWORD = cfg.email_password
+PLATFORM_NAME = cfg.email_sender_name
 
 
 def _is_configured() -> bool:
-    return bool(SMTP_USER and SMTP_PASSWORD)
+    return cfg.email_configured
 
 
 def _send(msg: MIMEMultipart, recipient: str) -> tuple:
@@ -88,8 +84,8 @@ def send_exchange_notification(
     """
     if not _is_configured():
         return False, (
-            "Email notifications are not set up yet. Add SMTP_USER and "
-            "SMTP_PASSWORD to your .env file to enable them."
+            "Email notifications are not set up yet. Add EMAIL_SENDER_ADDRESS "
+            "and EMAIL_SENDER_PASSWORD to your .env file to enable them."
         )
 
     msg = MIMEMultipart("alternative")

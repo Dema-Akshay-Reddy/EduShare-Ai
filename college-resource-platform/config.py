@@ -27,30 +27,33 @@ class _Config:
     # ── Email ────────────────────────────────────────────────────────────────
     @property
     def email_sender(self) -> str:
-        return os.getenv("EMAIL_SENDER_ADDRESS", "")
+        return os.getenv("EMAIL_SENDER_ADDRESS") or os.getenv("SMTP_USER", "")
 
     @property
     def email_password(self) -> str:
-        return os.getenv("EMAIL_SENDER_PASSWORD", "")
+        return os.getenv("EMAIL_SENDER_PASSWORD") or os.getenv("SMTP_PASSWORD", "")
 
     @property
     def email_sender_name(self) -> str:
-        return os.getenv("EMAIL_SENDER_NAME", "EduShare AI Platform")
+        return os.getenv("EMAIL_SENDER_NAME") or os.getenv("PLATFORM_NAME", "EduShare AI")
 
     @property
     def smtp_host(self) -> str:
-        return os.getenv("EMAIL_SMTP_HOST", "smtp.gmail.com")
+        return os.getenv("EMAIL_SMTP_HOST") or os.getenv("SMTP_HOST", "smtp.gmail.com")
 
     @property
     def smtp_port(self) -> int:
-        return int(os.getenv("EMAIL_SMTP_PORT", "587"))
+        return int(os.getenv("EMAIL_SMTP_PORT") or os.getenv("SMTP_PORT", "587"))
 
     @property
     def email_configured(self) -> bool:
         """True only when real credentials have been supplied."""
         return bool(self.email_sender and self.email_password
                     and "@" in self.email_sender
-                    and self.email_password != "your_16_char_app_password")
+                    and self.email_password not in {
+                        "your_16_char_app_password",
+                        "your_app_password_here",
+                    })
 
     # ── Session ──────────────────────────────────────────────────────────────
     @property

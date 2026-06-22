@@ -71,6 +71,10 @@ if "browse_filter_department" not in st.session_state:
     st.session_state.browse_filter_department = "All"
 if "browse_filter_semester" not in st.session_state:
     st.session_state.browse_filter_semester = "All"
+if "browse_search_query" not in st.session_state:
+    st.session_state.browse_search_query = ""
+if "last_uploaded_id" not in st.session_state:
+    st.session_state.last_uploaded_id = None
 if "last_exchange" not in st.session_state:
     st.session_state.last_exchange = None
 
