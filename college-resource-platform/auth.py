@@ -22,7 +22,7 @@ import hashlib
 import hmac
 import secrets
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timedelta
 
 PBKDF2_ITERATIONS = 260_000
 SALT_BYTES = 16
@@ -32,6 +32,10 @@ EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_MINUTES = 5
+
+# Session token settings
+SESSION_TOKEN_BYTES = 32          # 256-bit token — effectively unguessable
+SESSION_DURATION_DAYS = 30        # "Remember me" validity window
 
 
 # ---------------------------------------------------------------------------
@@ -114,3 +118,16 @@ def is_locked(user: dict):
         remaining_minutes = max(1, int(remaining_seconds // 60) + 1)
         return True, f"Too many failed attempts. Please try again in about {remaining_minutes} minute(s)."
     return False, ""
+
+
+# ---------------------------------------------------------------------------
+# Persistent session tokens ("Remember me")
+# ---------------------------------------------------------------------------
+def generate_session_token() -> str:
+    """Return a cryptographically secure random hex token (64 hex chars = 256 bits)."""
+    return secrets.token_hex(SESSION_TOKEN_BYTES)
+
+
+def session_expires_at() -> str:
+    """ISO datetime string for SESSION_DURATION_DAYS from now."""
+    return (datetime.now() + timedelta(days=SESSION_DURATION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")

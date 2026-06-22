@@ -13,10 +13,13 @@ import matplotlib.pyplot as plt
 import sqlite3
 from datetime import date
 
+import extra_streamlit_components as stx
+
 import database as db
 import ml_engine as ml
 import sustainability as sus
 import auth
+import email_service as mailer
 from data_generator import seed_database, refresh_resources_csv
 from constants import DEPARTMENTS, CATEGORIES, CONDITIONS, SEMESTERS, AVERAGE_PRICE
 
@@ -27,10 +30,19 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
+# Cookie manager — persists the session token across page refreshes
+# ---------------------------------------------------------------------------
+# CookieManager must be instantiated at the top level of the script so
+# Streamlit can track it across reruns.
+cookie_manager = stx.CookieManager(key="edushare_cookie_manager")
+SESSION_COOKIE = "edushare_session"
+
+# ---------------------------------------------------------------------------
 # Setup (runs once per session start; idempotent)
 # ---------------------------------------------------------------------------
 db.init_db()
 seed_database()
+db.purge_expired_sessions()
 
 @st.cache_resource
 def get_demand_predictor():
@@ -48,9 +60,10 @@ if "search_terms" not in st.session_state:
     st.session_state.search_terms = []
 if "flash" not in st.session_state:
     st.session_state.flash = None
+if "session_cookie_checked" not in st.session_state:
+    st.session_state.session_cookie_checked = False
 
 # Browse filter state — stored explicitly so we can programmatically reset them
-# (e.g. after an upload) rather than relying on Streamlit's auto-keyed widget state.
 if "browse_filter_category" not in st.session_state:
     st.session_state.browse_filter_category = "All"
 if "browse_filter_department" not in st.session_state:
@@ -59,21 +72,48 @@ if "browse_filter_semester" not in st.session_state:
     st.session_state.browse_filter_semester = "All"
 if "browse_search_query" not in st.session_state:
     st.session_state.browse_search_query = ""
-# ID of the most recently uploaded resource so Browse can highlight it
 if "last_uploaded_id" not in st.session_state:
     st.session_state.last_uploaded_id = None
 
 
-def log_in_user(user_row):
-    """Populate session state for a successfully authenticated user."""
+def log_in_user(user_row, remember_me: bool = False):
+    """Populate session state for a successfully authenticated user.
+    If remember_me is True, also create a persistent session token stored
+    in a browser cookie so the user is auto-logged in on the next visit."""
     st.session_state.auth_user = user_row
     st.session_state.current_student = db.get_student_by_id(user_row["student_id"])
+    if remember_me:
+        token = auth.generate_session_token()
+        expires = auth.session_expires_at()
+        db.create_session(token, user_row["id"], expires)
+        cookie_manager.set(SESSION_COOKIE, token, key="set_session_cookie")
 
 
 def log_out_user():
+    # Invalidate the server-side session record so the cookie can't be replayed
+    token = cookie_manager.get(SESSION_COOKIE)
+    if token:
+        db.delete_session(token)
+        cookie_manager.delete(SESSION_COOKIE, key="del_session_cookie")
     st.session_state.auth_user = None
     st.session_state.current_student = None
     st.session_state.search_terms = []
+    st.session_state.session_cookie_checked = False
+
+
+# ---------------------------------------------------------------------------
+# Auto-login from persistent cookie (runs once per browser session)
+# ---------------------------------------------------------------------------
+if not st.session_state.session_cookie_checked and st.session_state.auth_user is None:
+    st.session_state.session_cookie_checked = True
+    token = cookie_manager.get(SESSION_COOKIE)
+    if token:
+        session = db.get_session(token)
+        if session:
+            user = db.get_user_by_id(session["user_id"])
+            if user:
+                log_in_user(user, remember_me=False)   # already have cookie; don't re-set it
+                st.session_state.flash = ("success", f"Welcome back, {user['full_name']}!")
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +143,7 @@ if st.session_state.auth_user is None:
                 with st.form("signin_form"):
                     si_username = st.text_input("Username")
                     si_password = st.text_input("Password", type="password")
+                    si_remember = st.checkbox("Remember me for 30 days", value=True)
                     si_submit = st.form_submit_button("Sign In", width='stretch')
 
                 if si_submit:
@@ -111,8 +152,6 @@ if st.session_state.auth_user is None:
                     else:
                         user = db.get_user_by_username(si_username.strip())
                         if user is None:
-                            # Generic message — never reveal whether the
-                            # username exists, to prevent account enumeration.
                             st.error("Invalid username or password.")
                         else:
                             locked, lock_msg = auth.is_locked(user)
@@ -120,7 +159,7 @@ if st.session_state.auth_user is None:
                                 st.error(lock_msg)
                             elif auth.verify_password(si_password, user["password_hash"], user["salt"]):
                                 db.record_login_success(user["id"])
-                                log_in_user(db.get_user_by_username(si_username.strip()))
+                                log_in_user(db.get_user_by_username(si_username.strip()), remember_me=si_remember)
                                 st.session_state.flash = ("success", f"Welcome back, {user['full_name']}!")
                                 st.rerun()
                             else:
@@ -150,6 +189,7 @@ if st.session_state.auth_user is None:
                     su_dept = st.selectbox("Department", DEPARTMENTS)
                     su_sem = st.selectbox("Semester", SEMESTERS)
                     su_interests = st.multiselect("Interests (helps with matching & recommendations)", CATEGORIES)
+                    su_remember = st.checkbox("Remember me for 30 days", value=True)
                     st.caption("Password must be at least 8 characters and include a letter and a number.")
                     su_submit = st.form_submit_button("Create Account", width='stretch')
 
@@ -190,7 +230,9 @@ if st.session_state.auth_user is None:
                             )
                             new_user = db.get_user_by_username(username_clean)
                             db.record_login_success(new_user["id"])
-                            log_in_user(new_user)
+                            log_in_user(new_user, remember_me=su_remember)
+                            # Send welcome email (non-blocking — don't fail signup if it errors)
+                            mailer.send_welcome_email(email_clean, su_full_name.strip(), username_clean)
                             st.session_state.flash = ("success", f"Account created — welcome, {su_full_name.strip()}!")
                             st.rerun()
                         except sqlite3.IntegrityError:
@@ -457,7 +499,32 @@ elif page == "🔎 Browse & AI Matching":
                     db.record_transaction(r["id"], current_user["full_name"], r["estimated_value"])
                     # Keep CSV in sync: status changes Available → Exchanged
                     refresh_resources_csv()
-                    st.success(f"Exchange recorded — you get the {r['item_name']}! Money saved: ₹{r['estimated_value']:.0f}")
+
+                    # ── Send email to the uploader ─────────────────────────
+                    uploader_user = db.get_user_by_full_name(r["uploader_name"])
+                    if uploader_user:
+                        sent, email_msg = mailer.send_exchange_notification(
+                            uploader_email   = uploader_user["email"],
+                            uploader_name    = r["uploader_name"],
+                            requester_name   = current_user["full_name"],
+                            requester_email  = current_user["email"],
+                            item_name        = r["item_name"],
+                            category         = r["category"],
+                            department       = r["department"],
+                            estimated_value  = r["estimated_value"],
+                        )
+                        if sent:
+                            st.success(
+                                f"Exchange recorded! ✅  Money saved: ₹{r['estimated_value']:.0f}  "
+                                f"📧 Notification sent to {r['uploader_name']}."
+                            )
+                        else:
+                            st.success(f"Exchange recorded — you get the {r['item_name']}! Money saved: ₹{r['estimated_value']:.0f}")
+                            if "not set up" not in email_msg:
+                                st.warning(f"Email notification could not be sent: {email_msg}")
+                    else:
+                        # Uploader is a synthetic/seeded user with no account — no email to send
+                        st.success(f"Exchange recorded — you get the {r['item_name']}! Money saved: ₹{r['estimated_value']:.0f}")
                     st.rerun()
 
             if st.session_state.get(f"show_matches_{r['id']}"):

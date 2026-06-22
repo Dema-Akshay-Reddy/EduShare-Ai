@@ -119,6 +119,26 @@ def init_db():
             )
         """)
 
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                token TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                token TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            )
+        """)
+
         conn.commit()
 
 
@@ -324,6 +344,17 @@ def get_user_by_email(email):
         return dict(row) if row else None
 
 
+def get_user_by_full_name(full_name: str):
+    """Look up a registered user by their display name.
+    Used to find an uploader's email address when sending exchange notifications.
+    Returns None if the uploader was a seeded/synthetic user with no account."""
+    with db_session() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE full_name = ?", (full_name,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
 def record_login_success(user_id):
     with db_session() as conn:
         cur = conn.cursor()
@@ -344,3 +375,60 @@ def record_login_failure(user_id, lock_until=None):
             WHERE id = ?
         """, (current + 1, lock_until, user_id))
         conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Sessions (persistent login across browser refreshes)
+# ---------------------------------------------------------------------------
+def create_session(token: str, user_id: int, expires_at: str):
+    """Store a new session token tied to a user. Cleans up any expired tokens
+    for the same user at the same time to keep the table lean."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with db_session() as conn:
+        cur = conn.cursor()
+        # Remove stale sessions for this user
+        cur.execute("DELETE FROM sessions WHERE user_id = ? AND expires_at < ?", (user_id, now))
+        cur.execute("""
+            INSERT OR REPLACE INTO sessions (token, user_id, created_at, expires_at)
+            VALUES (?, ?, ?, ?)
+        """, (token, user_id, now, expires_at))
+        conn.commit()
+
+
+def get_session(token: str):
+    """Return the session row if the token exists and has not expired, else None."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with db_session() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT s.*, u.id as uid FROM sessions s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.token = ? AND s.expires_at > ?
+        """, (token, now))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def delete_session(token: str):
+    """Invalidate a session token on logout."""
+    with db_session() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        conn.commit()
+
+
+def purge_expired_sessions():
+    """Housekeeping — delete all rows whose expiry has passed."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with db_session() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
+        conn.commit()
+
+
+def get_user_by_id(user_id: int):
+    with db_session() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
