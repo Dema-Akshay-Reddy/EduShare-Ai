@@ -171,6 +171,14 @@ def export_resources_csv(resources_with_ids, path):
             ])
 
 
+def refresh_resources_csv():
+    """Re-export ALL resources from the DB to the CSV file.
+    Call this whenever the resources table changes (upload, exchange status
+    update, etc.) so the CSV stays in sync with SQLite at all times."""
+    csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "resources.csv")
+    export_resources_csv(db.get_all_resources(), csv_path)
+
+
 def seed_database():
     """Populate the DB with synthetic data only if it's currently empty."""
     db.init_db()

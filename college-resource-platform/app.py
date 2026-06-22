@@ -17,7 +17,7 @@ import database as db
 import ml_engine as ml
 import sustainability as sus
 import auth
-from data_generator import seed_database
+from data_generator import seed_database, refresh_resources_csv
 from constants import DEPARTMENTS, CATEGORIES, CONDITIONS, SEMESTERS, AVERAGE_PRICE
 
 st.set_page_config(
@@ -48,6 +48,20 @@ if "search_terms" not in st.session_state:
     st.session_state.search_terms = []
 if "flash" not in st.session_state:
     st.session_state.flash = None
+
+# Browse filter state — stored explicitly so we can programmatically reset them
+# (e.g. after an upload) rather than relying on Streamlit's auto-keyed widget state.
+if "browse_filter_category" not in st.session_state:
+    st.session_state.browse_filter_category = "All"
+if "browse_filter_department" not in st.session_state:
+    st.session_state.browse_filter_department = "All"
+if "browse_filter_semester" not in st.session_state:
+    st.session_state.browse_filter_semester = "All"
+if "browse_search_query" not in st.session_state:
+    st.session_state.browse_search_query = ""
+# ID of the most recently uploaded resource so Browse can highlight it
+if "last_uploaded_id" not in st.session_state:
+    st.session_state.last_uploaded_id = None
 
 
 def log_in_user(user_row):
@@ -301,6 +315,19 @@ elif page == "📤 Upload Resource":
                 item_name, category, department, semester, condition,
                 description, availability_status, uploader_name, estimated_value
             )
+
+            # ── FIX 1: Refresh the CSV so it stays in sync with the DB ──────
+            refresh_resources_csv()
+
+            # ── FIX 2: Reset Browse filters so the new upload is visible ─────
+            # Without this, stale filter state (e.g. Category = Drawing Instrument)
+            # persists in session and hides newly uploaded resources of other types.
+            st.session_state.browse_filter_category = "All"
+            st.session_state.browse_filter_department = "All"
+            st.session_state.browse_filter_semester = "All"
+            st.session_state.browse_search_query = ""
+            st.session_state.last_uploaded_id = new_id
+
             st.success(f"✅ '{item_name}' uploaded successfully (Resource ID #{new_id}).")
 
             resource = db.get_resource_by_id(new_id)
@@ -319,6 +346,7 @@ elif page == "📤 Upload Resource":
                 st.info(f"📣 Notification simulated: {len(matches)} matched students would be notified about this listing.")
             else:
                 st.warning("No strong matches found yet — add more student profiles to improve matching.")
+            st.info("💡 Your listing is live — head to **Browse & AI Matching** to see it at the top.")
 
 
 # ===========================================================================
@@ -328,16 +356,65 @@ elif page == "🔎 Browse & AI Matching":
     st.title("🔎 Browse Resources")
     st.caption("Search available resources and request an exchange.")
 
-    f1, f2, f3, f4 = st.columns(4)
-    with f1:
-        filter_category = st.selectbox("Category", ["All"] + CATEGORIES)
-    with f2:
-        filter_department = st.selectbox("Department", ["All"] + DEPARTMENTS)
-    with f3:
-        filter_semester = st.selectbox("Semester", ["All"] + SEMESTERS)
-    with f4:
-        search_query = st.text_input("Search keyword", placeholder="e.g. drawing, calculator...")
+    # ── Filter bar ────────────────────────────────────────────────────────────
+    # Filters are backed by st.session_state so we can programmatically reset
+    # them (e.g. after an upload clears them so the new listing is visible).
+    filters_active = (
+        st.session_state.browse_filter_category != "All"
+        or st.session_state.browse_filter_department != "All"
+        or st.session_state.browse_filter_semester != "All"
+        or st.session_state.browse_search_query != ""
+    )
 
+    f1, f2, f3, f4, f5 = st.columns([2, 2, 1, 2, 1])
+    with f1:
+        filter_category = st.selectbox(
+            "Category", ["All"] + CATEGORIES,
+            index=(["All"] + CATEGORIES).index(st.session_state.browse_filter_category),
+            key="browse_filter_category",
+        )
+    with f2:
+        filter_department = st.selectbox(
+            "Department", ["All"] + DEPARTMENTS,
+            index=(["All"] + DEPARTMENTS).index(st.session_state.browse_filter_department),
+            key="browse_filter_department",
+        )
+    with f3:
+        filter_semester = st.selectbox(
+            "Semester", ["All"] + SEMESTERS,
+            index=(["All"] + SEMESTERS).index(st.session_state.browse_filter_semester),
+            key="browse_filter_semester",
+        )
+    with f4:
+        search_query = st.text_input(
+            "Search keyword",
+            value=st.session_state.browse_search_query,
+            placeholder="e.g. drawing, calculator...",
+            key="browse_search_query",
+        )
+    with f5:
+        st.write("")  # vertical align
+        if filters_active:
+            if st.button("✖ Clear", help="Reset all filters and show all available resources"):
+                st.session_state.browse_filter_category = "All"
+                st.session_state.browse_filter_department = "All"
+                st.session_state.browse_filter_semester = "All"
+                st.session_state.browse_search_query = ""
+                st.rerun()
+
+    if filters_active:
+        active = []
+        if filter_category != "All":
+            active.append(f"Category = **{filter_category}**")
+        if filter_department != "All":
+            active.append(f"Department = **{filter_department}**")
+        if filter_semester != "All":
+            active.append(f"Semester = **{filter_semester}**")
+        if search_query:
+            active.append(f"Keyword = **\"{search_query}\"**")
+        st.warning(f"⚠️ Filters active: {', '.join(active)}. Recently uploaded resources outside these filters won't appear. Click **✖ Clear** to reset.")
+
+    # ── Fetch and filter ──────────────────────────────────────────────────────
     resources = db.get_all_resources(only_available=True)
     if filter_category != "All":
         resources = [r for r in resources if r["category"] == filter_category]
@@ -351,14 +428,25 @@ elif page == "🔎 Browse & AI Matching":
         db.log_search(current_user["full_name"], search_query)
         st.session_state.search_terms.append(search_query)
 
-    st.write(f"**{len(resources)}** resource(s) found")
+    count_label = f"**{len(resources)}** resource(s) found"
+    if st.session_state.last_uploaded_id:
+        new_visible = any(r["id"] == st.session_state.last_uploaded_id for r in resources)
+        if new_visible:
+            count_label += " · 🆕 Your new listing is shown below"
+        else:
+            count_label += " · ⚠️ Your recent upload is hidden by the active filters — click **✖ Clear** to see it"
+    st.write(count_label)
+
+    today = date.today().strftime("%Y-%m-%d")
 
     for r in resources:
+        is_new = r["id"] == st.session_state.last_uploaded_id
         with st.container(border=True):
             c1, c2 = st.columns([4, 1])
             with c1:
-                st.markdown(f"**{r['item_name']}** · {r['category']} · {r['department']} · Sem {r['semester']}")
-                st.caption(f"Condition: {r['condition']} | Est. value: ₹{r['estimated_value']:.0f} | Uploaded by {r['uploader_name']}")
+                badge = " 🆕 **NEW**" if is_new else ""
+                st.markdown(f"**{r['item_name']}**{badge} · {r['category']} · {r['department']} · Sem {r['semester']}")
+                st.caption(f"Condition: {r['condition']} | Est. value: ₹{r['estimated_value']:.0f} | Uploaded by {r['uploader_name']} | {r['upload_date']}")
                 st.write(r["description"])
             with c2:
                 if st.button("View AI Matches", key=f"match_{r['id']}"):
@@ -367,6 +455,8 @@ elif page == "🔎 Browse & AI Matching":
                     st.caption("This is your own listing.")
                 elif st.button("Request Exchange", key=f"exchange_{r['id']}"):
                     db.record_transaction(r["id"], current_user["full_name"], r["estimated_value"])
+                    # Keep CSV in sync: status changes Available → Exchanged
+                    refresh_resources_csv()
                     st.success(f"Exchange recorded — you get the {r['item_name']}! Money saved: ₹{r['estimated_value']:.0f}")
                     st.rerun()
 
