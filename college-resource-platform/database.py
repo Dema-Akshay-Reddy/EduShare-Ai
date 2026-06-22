@@ -161,7 +161,6 @@ def add_resource(item_name, category, department, semester, condition,
         """, (item_name, category, department, semester, condition, description,
               availability_status, uploader_name, estimated_value,
               datetime.now().strftime("%Y-%m-%d")))
-        conn.commit()
         return cur.lastrowid
 
 
@@ -188,7 +187,6 @@ def update_resource_status(resource_id, status):
     with db_session() as conn:
         cur = conn.cursor()
         cur.execute("UPDATE resources SET availability_status = ? WHERE id = ?", (status, resource_id))
-        conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +199,6 @@ def add_student(name, department, semester, interests=""):
             INSERT INTO students (name, department, semester, interests)
             VALUES (?, ?, ?, ?)
         """, (name, department, semester, interests))
-        conn.commit()
         return cur.lastrowid
 
 
@@ -239,7 +236,6 @@ def record_transaction(resource_id, recipient_name, money_saved):
             INSERT INTO transactions (resource_id, recipient_name, exchange_date, money_saved)
             VALUES (?, ?, ?, ?)
         """, (resource_id, recipient_name, datetime.now().strftime("%Y-%m-%d"), money_saved))
-        conn.commit()
     update_resource_status(resource_id, "Exchanged")
 
 

@@ -12,6 +12,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import sqlite3
 from datetime import date
+from urllib.parse import quote
 
 import extra_streamlit_components as stx
 
@@ -517,16 +518,20 @@ elif page == "🔎 Browse & AI Matching":
                             estimated_value  = r["estimated_value"],
                         )
                         
-                        # Create mailto link that opens user's email client
+                        # Create properly encoded mailto link that opens user's email client
                         mailto_subject = f"Re: {r['item_name']} on EduShare AI"
                         mailto_body = f"Hi {r['uploader_name']},\n\nI am interested in your listing: {r['item_name']} ({r['category']}).\n\nPlease contact me at {current_user['email']} to arrange the exchange.\n\nThanks!"
-                        mailto_link = f"mailto:{uploader_email}?subject={mailto_subject}&body={mailto_body.replace(chr(10), '%0D%0A')}"
+                        
+                        # Properly URL-encode subject and body for mailto link
+                        encoded_subject = quote(mailto_subject)
+                        encoded_body = quote(mailto_body)
+                        mailto_link = f"mailto:{uploader_email}?subject={encoded_subject}&body={encoded_body}"
                         
                         st.success(
                             f"Exchange recorded! ✅  Money saved: ₹{r['estimated_value']:.0f}\n\n"
                             f"📧 Click below to send an email to {r['uploader_name']} ({uploader_email}):"
                         )
-                        st.markdown(f"[✉️ Open Email Client](mailto:{uploader_email}?subject={mailto_subject})", unsafe_allow_html=False)
+                        st.markdown(f"[✉️ Open Email Client]({mailto_link})", unsafe_allow_html=False)
                         
                         if sent:
                             st.info(f"A system notification has also been sent to {r['uploader_name']}. Arrange the exchange via email above.")
