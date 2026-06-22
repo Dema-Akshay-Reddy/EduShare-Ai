@@ -155,20 +155,30 @@ def generate_demand_history():
 
 
 def export_resources_csv(resources_with_ids, path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            "id", "item_name", "category", "department", "semester", "condition",
-            "description", "availability_status", "uploader_name",
-            "estimated_value", "upload_date"
-        ])
-        for r in resources_with_ids:
+    """Export resources to CSV file with error handling and validation."""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
             writer.writerow([
-                r["id"], r["item_name"], r["category"], r["department"], r["semester"],
-                r["condition"], r["description"], r["availability_status"],
-                r["uploader_name"], r["estimated_value"], r["upload_date"]
+                "id", "item_name", "category", "department", "semester", "condition",
+                "description", "availability_status", "uploader_name",
+                "estimated_value", "upload_date"
             ])
+            for r in resources_with_ids:
+                writer.writerow([
+                    r["id"], r["item_name"], r["category"], r["department"], r["semester"],
+                    r["condition"], r["description"], r["availability_status"],
+                    r["uploader_name"], r["estimated_value"], r["upload_date"]
+                ])
+        print(f"✅ CSV exported successfully to {path} ({len(resources_with_ids)} resources)")
+        return True
+    except IOError as e:
+        print(f"❌ CSV export failed: {e}")
+        return False
+    except Exception as e:
+        print(f"❌ Unexpected error during CSV export: {e}")
+        return False
 
 
 def refresh_resources_csv():
@@ -176,7 +186,11 @@ def refresh_resources_csv():
     Call this whenever the resources table changes (upload, exchange status
     update, etc.) so the CSV stays in sync with SQLite at all times."""
     csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "resources.csv")
-    export_resources_csv(db.get_all_resources(), csv_path)
+    resources = db.get_all_resources()
+    if resources:
+        export_resources_csv(resources, csv_path)
+    else:
+        print("⚠️  No resources to export to CSV")
 
 
 def seed_database():

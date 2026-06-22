@@ -28,12 +28,16 @@ def get_connection():
 @contextmanager
 def db_session():
     """Yields a connection and guarantees it is closed afterwards, even if
-    the caller's code raises an exception."""
+    the caller's code raises an exception. Automatically commits on success."""
     conn = get_connection()
     try:
         yield conn
+        conn.commit()  # Commit on successful completion
+    except Exception:
+        conn.rollback()  # Rollback on error
+        raise
     finally:
-        conn.close()
+        conn.close()  # Always close the connection
 
 
 def init_db():

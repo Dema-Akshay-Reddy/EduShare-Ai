@@ -1,4 +1,5 @@
 id,item_name,category,department,semester,condition,description,availability_status,uploader_name,estimated_value,upload_date
+91,TEST Textbook - Python Programming,Textbook,Computer Science,2,Good,Test resource to verify database commit,Available,Test User,500.0,2026-06-22
 90,Digital Electronics Lab Kit,Lab Kit,Mechanical Engineering,5,Fair,"Barely used, functional with some visible wear. Selling/donating as I no longer need it.",Exchanged,Kavya Singh,495.0,2026-06-22
 89,Scientific Calculator (fx-991ES),Calculator,Electronics & Communication,2,Fair,"Bought new but switched electives, functional with some visible wear and unused since.",Available,Reyansh Rao,660.0,2026-06-22
 88,Surveying Textbook,Textbook,Civil Engineering,4,Good,"Bought new but switched electives, minor cosmetic wear only and unused since.",Exchanged,Vivaan Joshi,487.5,2026-06-22

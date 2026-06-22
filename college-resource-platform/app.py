@@ -500,11 +500,14 @@ elif page == "🔎 Browse & AI Matching":
                     # Keep CSV in sync: status changes Available → Exchanged
                     refresh_resources_csv()
 
-                    # ── Send email to the uploader ─────────────────────────
+                    # ── Send email to the uploader & open email client ─────
                     uploader_user = db.get_user_by_full_name(r["uploader_name"])
                     if uploader_user:
+                        uploader_email = uploader_user["email"]
+                        
+                        # Send backend notification email
                         sent, email_msg = mailer.send_exchange_notification(
-                            uploader_email   = uploader_user["email"],
+                            uploader_email   = uploader_email,
                             uploader_name    = r["uploader_name"],
                             requester_name   = current_user["full_name"],
                             requester_email  = current_user["email"],
@@ -513,18 +516,27 @@ elif page == "🔎 Browse & AI Matching":
                             department       = r["department"],
                             estimated_value  = r["estimated_value"],
                         )
+                        
+                        # Create mailto link that opens user's email client
+                        mailto_subject = f"Re: {r['item_name']} on EduShare AI"
+                        mailto_body = f"Hi {r['uploader_name']},\n\nI am interested in your listing: {r['item_name']} ({r['category']}).\n\nPlease contact me at {current_user['email']} to arrange the exchange.\n\nThanks!"
+                        mailto_link = f"mailto:{uploader_email}?subject={mailto_subject}&body={mailto_body.replace(chr(10), '%0D%0A')}"
+                        
+                        st.success(
+                            f"Exchange recorded! ✅  Money saved: ₹{r['estimated_value']:.0f}\n\n"
+                            f"📧 Click below to send an email to {r['uploader_name']} ({uploader_email}):"
+                        )
+                        st.markdown(f"[✉️ Open Email Client](mailto:{uploader_email}?subject={mailto_subject})", unsafe_allow_html=False)
+                        
                         if sent:
-                            st.success(
-                                f"Exchange recorded! ✅  Money saved: ₹{r['estimated_value']:.0f}  "
-                                f"📧 Notification sent to {r['uploader_name']}."
-                            )
+                            st.info(f"A system notification has also been sent to {r['uploader_name']}. Arrange the exchange via email above.")
                         else:
-                            st.success(f"Exchange recorded — you get the {r['item_name']}! Money saved: ₹{r['estimated_value']:.0f}")
                             if "not set up" not in email_msg:
-                                st.warning(f"Email notification could not be sent: {email_msg}")
+                                st.warning(f"System notification could not be sent: {email_msg}")
                     else:
                         # Uploader is a synthetic/seeded user with no account — no email to send
                         st.success(f"Exchange recorded — you get the {r['item_name']}! Money saved: ₹{r['estimated_value']:.0f}")
+                        st.warning("⚠️ The resource uploader has no registered account, so you cannot contact them directly.")
                     st.rerun()
 
             if st.session_state.get(f"show_matches_{r['id']}"):
