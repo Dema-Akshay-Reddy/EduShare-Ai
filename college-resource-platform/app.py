@@ -71,10 +71,8 @@ if "browse_filter_department" not in st.session_state:
     st.session_state.browse_filter_department = "All"
 if "browse_filter_semester" not in st.session_state:
     st.session_state.browse_filter_semester = "All"
-if "browse_search_query" not in st.session_state:
-    st.session_state.browse_search_query = ""
-if "last_uploaded_id" not in st.session_state:
-    st.session_state.last_uploaded_id = None
+if "last_exchange" not in st.session_state:
+    st.session_state.last_exchange = None
 
 
 def log_in_user(user_row, remember_me: bool = False):
@@ -399,6 +397,32 @@ elif page == "🔎 Browse & AI Matching":
     st.title("🔎 Browse Resources")
     st.caption("Search available resources and request an exchange.")
 
+    # ── Display persistent exchange confirmation message ────────────────────────
+    if st.session_state.last_exchange:
+        ex = st.session_state.last_exchange
+        if ex.get("has_account"):
+            # Uploader has an account - show email link
+            st.success(
+                f"✅ Exchange recorded! Money saved: ₹{ex['money_saved']:.0f}\n\n"
+                f"📧 Send an email to {ex['uploader_name']} ({ex['uploader_email']}):"
+            )
+            st.markdown(f"[✉️ Open Email Client]({ex['mailto_link']})")
+            
+            if ex.get("sent"):
+                st.info(f"A system notification has also been sent to {ex['uploader_name']}.")
+            else:
+                if "not set up" not in ex.get("email_msg", ""):
+                    st.warning(f"System notification could not be sent: {ex.get('email_msg', 'Unknown error')}")
+        else:
+            # Synthetic user - no account
+            st.success(f"✅ Exchange recorded — you get the {ex['item_name']}! Money saved: ₹{ex['money_saved']:.0f}")
+            st.warning("⚠️ The resource uploader has no registered account, so you cannot contact them directly.")
+        
+        # Clear the message after displaying
+        if st.button("✖ Close notification", key="close_exchange_notification"):
+            st.session_state.last_exchange = None
+            st.rerun()
+
     # ── Filter bar ────────────────────────────────────────────────────────────
     # Filters are backed by st.session_state so we can programmatically reset
     # them (e.g. after an upload clears them so the new listing is visible).
@@ -527,21 +551,24 @@ elif page == "🔎 Browse & AI Matching":
                         encoded_body = quote(mailto_body)
                         mailto_link = f"mailto:{uploader_email}?subject={encoded_subject}&body={encoded_body}"
                         
-                        st.success(
-                            f"Exchange recorded! ✅  Money saved: ₹{r['estimated_value']:.0f}\n\n"
-                            f"📧 Click below to send an email to {r['uploader_name']} ({uploader_email}):"
-                        )
-                        st.markdown(f"[✉️ Open Email Client]({mailto_link})", unsafe_allow_html=False)
-                        
-                        if sent:
-                            st.info(f"A system notification has also been sent to {r['uploader_name']}. Arrange the exchange via email above.")
-                        else:
-                            if "not set up" not in email_msg:
-                                st.warning(f"System notification could not be sent: {email_msg}")
+                        # Store exchange info in session state to persist across reruns
+                        st.session_state.last_exchange = {
+                            "item_name": r["item_name"],
+                            "uploader_name": r["uploader_name"],
+                            "uploader_email": uploader_email,
+                            "money_saved": r["estimated_value"],
+                            "mailto_link": mailto_link,
+                            "sent": sent,
+                            "email_msg": email_msg,
+                            "has_account": True,
+                        }
                     else:
                         # Uploader is a synthetic/seeded user with no account — no email to send
-                        st.success(f"Exchange recorded — you get the {r['item_name']}! Money saved: ₹{r['estimated_value']:.0f}")
-                        st.warning("⚠️ The resource uploader has no registered account, so you cannot contact them directly.")
+                        st.session_state.last_exchange = {
+                            "item_name": r["item_name"],
+                            "money_saved": r["estimated_value"],
+                            "has_account": False,
+                        }
                     st.rerun()
 
             if st.session_state.get(f"show_matches_{r['id']}"):
